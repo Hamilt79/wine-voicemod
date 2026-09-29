@@ -2997,68 +2997,66 @@ static BOOL empty_point( POINT pt )
 
 /* When a window is a top-level window that doesn't have WS_EX_TOOLWINDOW, ptMinPosition,
  * ptMaxPosition, and rcNormalPosition are in work area coordinates. Otherwise, they are in screen
- * coordinates. So we need to convert the coordinates to screen coordinates. */
-static void placement_workarea_to_screen( HWND hwnd, WINDOWPLACEMENT *wp )
+ * coordinates. So we need to convert the coordinates to screen coordinates.
+ *
+ * Work area coordinates differ from screen coordinates by the offset of the work area inside its
+ * monitor, which is the space taken by a taskbar at the left or top.  They are not relative to
+ * the monitor: a window on a secondary monitor keeps that monitor's position. */
+static POINT get_placement_workarea_offset( HWND hwnd, const WINDOWPLACEMENT *wp )
 {
     DWORD style, ex_style;
     MONITORINFO mon_info;
+    POINT offset = {0};
 
-    if (hwnd == NtUserGetDesktopWindow())
-        return;
+    if (hwnd == NtUserGetDesktopWindow()) return offset;
 
     style = get_window_long( hwnd, GWL_STYLE );
     ex_style = get_window_long( hwnd, GWL_EXSTYLE );
-
-    if (style & WS_CHILD || ex_style & WS_EX_TOOLWINDOW)
-        return;
+    if (style & WS_CHILD || ex_style & WS_EX_TOOLWINDOW) return offset;
 
     mon_info = monitor_info_from_rect( wp->rcNormalPosition, get_thread_dpi() );
+    offset.x = mon_info.rcWork.left - mon_info.rcMonitor.left;
+    offset.y = mon_info.rcWork.top - mon_info.rcMonitor.top;
+    return offset;
+}
+
+static void placement_workarea_to_screen( HWND hwnd, WINDOWPLACEMENT *wp )
+{
+    POINT offset = get_placement_workarea_offset( hwnd, wp );
 
     if (!empty_point( wp->ptMinPosition ))
     {
-        wp->ptMinPosition.x += mon_info.rcWork.left;
-        wp->ptMinPosition.y += mon_info.rcWork.top;
+        wp->ptMinPosition.x += offset.x;
+        wp->ptMinPosition.y += offset.y;
     }
 
     if (!empty_point( wp->ptMaxPosition ))
     {
-        wp->ptMaxPosition.x += mon_info.rcWork.left;
-        wp->ptMaxPosition.y += mon_info.rcWork.top;
+        wp->ptMaxPosition.x += offset.x;
+        wp->ptMaxPosition.y += offset.y;
     }
 
-    OffsetRect( &wp->rcNormalPosition, mon_info.rcWork.left, mon_info.rcWork.top );
+    OffsetRect( &wp->rcNormalPosition, offset.x, offset.y );
 }
 
 static void placement_screen_to_workarea( HWND hwnd, WINDOWPLACEMENT *wp )
 {
-    DWORD style, ex_style;
-    MONITORINFO mon_info;
-
-    if (hwnd == NtUserGetDesktopWindow())
-        return;
-
-    style = get_window_long( hwnd, GWL_STYLE );
-    ex_style = get_window_long( hwnd, GWL_EXSTYLE );
-
-    if (style & WS_CHILD || ex_style & WS_EX_TOOLWINDOW)
-        return;
-
-    mon_info = monitor_info_from_rect( wp->rcNormalPosition, get_thread_dpi() );
+    POINT offset = get_placement_workarea_offset( hwnd, wp );
 
     if (!empty_point( wp->ptMinPosition ))
     {
-        wp->ptMinPosition.x -= mon_info.rcWork.left;
-        wp->ptMinPosition.y -= mon_info.rcWork.top;
+        wp->ptMinPosition.x -= offset.x;
+        wp->ptMinPosition.y -= offset.y;
     }
 
     /* ptMaxPosition is in screen coordinates when WS_MAXIMIZE is present */
-    if (!(style & WS_MAXIMIZE) && !empty_point( wp->ptMaxPosition ))
+    if (!(get_window_long( hwnd, GWL_STYLE ) & WS_MAXIMIZE) && !empty_point( wp->ptMaxPosition ))
     {
-        wp->ptMaxPosition.x -= mon_info.rcWork.left;
-        wp->ptMaxPosition.y -= mon_info.rcWork.top;
+        wp->ptMaxPosition.x -= offset.x;
+        wp->ptMaxPosition.y -= offset.y;
     }
 
-    OffsetRect( &wp->rcNormalPosition, -mon_info.rcWork.left, -mon_info.rcWork.top );
+    OffsetRect( &wp->rcNormalPosition, -offset.x, -offset.y );
 }
 
 /* Coordinates returned in WINDOWPLACEMENT is always in screen coordinates */
