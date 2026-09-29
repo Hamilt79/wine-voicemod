@@ -130,6 +130,12 @@ static HRESULT WINAPI control_GetState(IAudioSessionControl2 *iface, AudioSessio
 
     sessions_lock();
 
+    if (This->session->host_listener) {
+        *state = AudioSessionStateActive;
+        sessions_unlock();
+        return S_OK;
+    }
+
     if (list_empty(&This->session->clients)) {
         *state = AudioSessionStateExpired;
         sessions_unlock();
@@ -255,6 +261,16 @@ static HRESULT WINAPI control_RegisterAudioSessionNotification(IAudioSessionCont
                                                            IAudioSessionEvents *events)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
+
+    if (This->session->host_listener)
+    {
+        /* The listener is permanently active and GetState reports that, so
+         * there is never a state change to deliver.  Clients may destroy
+         * their sink without unregistering; do not retain it. */
+        TRACE("(%p)->(%p) host listener\n", This, events);
+        return S_OK;
+    }
+
     FIXME("(%p)->(%p) - stub\n", This, events);
     return S_OK;
 }
@@ -330,7 +346,7 @@ static HRESULT WINAPI control_GetProcessId(IAudioSessionControl2 *iface, DWORD *
     if (!pid)
         return E_POINTER;
 
-    *pid = GetCurrentProcessId();
+    *pid = This->session->host_listener ? get_host_listener_pid() : GetCurrentProcessId();
 
     return S_OK;
 }

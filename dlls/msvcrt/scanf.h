@@ -421,7 +421,12 @@ _FUNCTION_ {
                     fp = fpnum_parse(_STRTOD_NAME_(strtod_scanf_get),
                             _STRTOD_NAME_(strtod_scanf_unget), &ctx, locinfo, FALSE);
                     fpnum_double(&fp, &cur);
-                    if(!rd && ctx.err) {
+                    /* ctx.err is also set when the parser has to push back
+                     * more than one character, e.g. after reading "No" while
+                     * probing for "nan".  That is a matching failure, which
+                     * returns the number of fields converted so far; only
+                     * running out of input is an input failure. */
+                    if(!rd && ctx.err && ctx.cur == _EOF_) {
                         _UNLOCK_FILE_(file);
                         return _EOF_RET;
                     }

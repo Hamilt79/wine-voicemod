@@ -3639,6 +3639,37 @@ BOOL WINAPI SetupDiOpenDeviceInterfaceA(HDEVINFO devinfo, const char *device_pat
 }
 
 /***********************************************************************
+ *              SetupDiGetDeviceInterfaceAlias (SETUPAPI.@)
+ */
+BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HDEVINFO devinfo, SP_DEVICE_INTERFACE_DATA *iface_data,
+        const GUID *alias_class, SP_DEVICE_INTERFACE_DATA *alias_data)
+{
+    struct device_iface *iface, *alias;
+
+    TRACE("%p %p %s %p\n", devinfo, iface_data, debugstr_guid(alias_class), alias_data);
+
+    if (!(iface = get_device_iface(devinfo, iface_data))) return FALSE;
+    if (!alias_class || !alias_data || alias_data->cbSize != sizeof(*alias_data))
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    LIST_FOR_EACH_ENTRY(alias, &iface->device->interfaces, struct device_iface, entry)
+    {
+        if (!IsEqualGUID(&alias->class, alias_class)) continue;
+        if (!!alias->refstr != !!iface->refstr) continue;
+        if (alias->refstr && wcsicmp(alias->refstr, iface->refstr)) continue;
+
+        copy_device_iface_data(alias_data, alias);
+        return TRUE;
+    }
+
+    SetLastError(ERROR_NO_SUCH_DEVICE_INTERFACE);
+    return FALSE;
+}
+
+/***********************************************************************
  *              SetupDiOpenDeviceInterfaceRegKey (SETUPAPI.@)
  */
 HKEY WINAPI SetupDiOpenDeviceInterfaceRegKey(HDEVINFO devinfo, PSP_DEVICE_INTERFACE_DATA iface_data,

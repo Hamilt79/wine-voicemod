@@ -1,0 +1,7 @@
+MODULE = winevoicemod.sys
+IMPORTS = ntoskrnl
+
+EXTRADLLFLAGS = -Wl,--subsystem,native
+
+SOURCES = \
+	main.c

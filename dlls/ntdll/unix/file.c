@@ -5832,6 +5832,8 @@ static NTSTATUS server_ioctl_file( HANDLE handle, HANDLE event,
                                    PVOID out_buffer, UINT out_size )
 {
     struct async_irp *async;
+    const void *server_in_buffer = in_buffer;
+    void *opaque_in_value;
     unsigned int status;
     HANDLE wait_handle;
     ULONG options;
@@ -5841,11 +5843,30 @@ static NTSTATUS server_ioctl_file( HANDLE handle, HANDLE event,
     async->buffer  = out_buffer;
     async->size    = out_size;
 
+    /*
+     * Some METHOD_NEITHER drivers use Type3InputBuffer as an opaque value
+     * instead of a pointer.  Voicemod's VAD control driver does this for its
+     * event-registration request: lpInBuffer is the event HANDLE itself and
+     * nInBufferSize is sizeof(HANDLE).  Passing that through the normal server
+     * path tries to copy from the handle value as if it were a user address,
+     * failing with STATUS_ACCESS_VIOLATION before the Wine driver sees it.
+     *
+     * Preserve this private request's opaque value in the server payload.  The
+     * companion winevoicemod driver consumes the copied HANDLE value rather
+     * than dereferencing the original process address.
+     */
+    if (code == CTL_CODE(0x1d, 0x801, METHOD_NEITHER, FILE_ANY_ACCESS) &&
+        in_size == sizeof(in_buffer))
+    {
+        opaque_in_value = (void *)in_buffer;
+        server_in_buffer = &opaque_in_value;
+    }
+
     SERVER_START_REQ( ioctl )
     {
         req->code        = code;
         req->async       = server_async( handle, &async->io, event, apc, apc_context, iosb_client_ptr(io) );
-        wine_server_add_data( req, in_buffer, in_size );
+        wine_server_add_data( req, server_in_buffer, in_size );
         if ((code & 3) != METHOD_BUFFERED) wine_server_add_data( req, out_buffer, out_size );
         wine_server_set_reply( req, out_buffer, out_size );
         status = virtual_locked_server_call( req );

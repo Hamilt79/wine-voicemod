@@ -33,6 +33,10 @@ struct audio_session {
 
     IMMDevice *device;
 
+    /* Synthetic session standing in for host applications which record from
+     * the Voicemod bridge outside of Wine. */
+    BOOL host_listener;
+
     float master_vol;
     UINT32 channel_count;
     float *channel_vols;
@@ -137,5 +141,7 @@ extern HRESULT get_audio_sessions(IMMDevice *device, GUID **ret, int *ret_count)
 
 extern struct audio_session_wrapper *session_wrapper_create(struct audio_client *client);
 
+extern BOOL is_voicemod_capture_endpoint(IMMDevice *device);
+extern DWORD get_host_listener_pid(void);
 extern void sessions_lock(void);
 extern void sessions_unlock(void);

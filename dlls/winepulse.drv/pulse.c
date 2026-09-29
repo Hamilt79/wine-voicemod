@@ -599,11 +599,34 @@ static void fill_device_info(PhysDevice *dev, pa_proplist *p)
 static void pulse_add_device(struct list *list, pa_proplist *proplist, int index, EndpointFormFactor form,
                              UINT channel_mask, const char *pulse_name, const char *desc)
 {
+    static const char voicemod_desc[] = "Voicemod Virtual Audio Device (WDM)";
     size_t len = strlen(pulse_name);
     PhysDevice *dev = malloc(FIELD_OFFSET(PhysDevice, pulse_name[len + 1]));
 
     if (!dev)
         return;
+
+    /* PipeWire's PulseAudio module parser cannot preserve whitespace in a
+     * dynamically supplied device.description on all supported versions.
+     * Give the bridge's stable node names the Windows endpoint names that
+     * Voicemod searches for. */
+    if (!strcmp(pulse_name, "voicemod_bridge"))
+    {
+        desc = voicemod_desc;
+        form = LineLevel;
+    }
+    else if (!strcmp(pulse_name, "voicemod_bridge.monitor"))
+    {
+        desc = voicemod_desc;
+        form = Microphone;
+    }
+    else if (!strcmp(pulse_name, "voicemod_mic"))
+    {
+        /* Host-side alias of the bridge's own output.  Hide it from Windows
+         * applications so Voicemod cannot capture its processed signal. */
+        free(dev);
+        return;
+    }
 
     if (!(dev->name = get_device_name(desc, proplist))) {
         free(dev);

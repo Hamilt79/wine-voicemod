@@ -18,6 +18,8 @@
 
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
+#include <tlhelp32.h>
+#include <devpkey.h>
 
 #include <wine/debug.h>
 #include <wine/list.h>
@@ -25,6 +27,132 @@
 #include "mmdevapi_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+WINE_DECLARE_DEBUG_CHANNEL(voicemod);
+
+/* {7f1c6c0e-5d0b-4f3a-9a53-2f4f6d2e8b11} */
+static const GUID host_listener_session_guid =
+    {0x7f1c6c0e, 0x5d0b, 0x4f3a, {0x9a, 0x53, 0x2f, 0x4f, 0x6d, 0x2e, 0x8b, 0x11}};
+
+BOOL is_voicemod_capture_endpoint(IMMDevice *device)
+{
+    IPropertyStore *store;
+    IMMEndpoint *endpoint;
+    EDataFlow flow;
+    PROPVARIANT pv;
+    BOOL ret = FALSE;
+    HRESULT hr;
+
+    if (FAILED(IMMDevice_QueryInterface(device, &IID_IMMEndpoint, (void **)&endpoint)))
+        return FALSE;
+    hr = IMMEndpoint_GetDataFlow(endpoint, &flow);
+    IMMEndpoint_Release(endpoint);
+    if (FAILED(hr) || flow != eCapture) return FALSE;
+
+    if (FAILED(IMMDevice_OpenPropertyStore(device, STGM_READ, &store))) return FALSE;
+    PropVariantInit(&pv);
+    if (SUCCEEDED(IPropertyStore_GetValue(store, (const PROPERTYKEY *)&DEVPKEY_Device_FriendlyName, &pv)) &&
+            pv.vt == VT_LPWSTR && pv.pwszVal && wcsstr(pv.pwszVal, L"Voicemod Virtual Audio Device"))
+        ret = TRUE;
+    PropVariantClear(&pv);
+    IPropertyStore_Release(store);
+    return ret;
+}
+
+/* The listener is a host application without a Windows process.  Name a
+ * long-lived process other than the caller so clients which resolve the
+ * process image, or which ignore their own sessions, accept the session. */
+DWORD get_host_listener_pid(void)
+{
+    static DWORD cached;
+    PROCESSENTRY32W entry = {.dwSize = sizeof(entry)};
+    DWORD self = GetCurrentProcessId(), fallback = 0;
+    HANDLE snapshot;
+
+    if (cached) return cached;
+    if ((snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)) == INVALID_HANDLE_VALUE)
+        return self;
+    if (Process32FirstW(snapshot, &entry))
+    {
+        do
+        {
+            if (entry.th32ProcessID == self || !entry.th32ProcessID) continue;
+            if (!wcsicmp(entry.szExeFile, L"explorer.exe"))
+            {
+                cached = entry.th32ProcessID;
+                break;
+            }
+            if (!fallback && !wcsicmp(entry.szExeFile, L"services.exe"))
+                fallback = entry.th32ProcessID;
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    if (!cached) cached = fallback ? fallback : self;
+    return cached;
+}
+
+struct host_listener_created
+{
+    IAudioSessionNotification *notification;
+    IAudioSessionControl *control;
+};
+
+static DWORD WINAPI host_listener_created_thread(void *arg)
+{
+    struct host_listener_created *created = arg;
+    HRESULT init = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    Sleep(300);
+    TRACE_(voicemod)("announcing host listener session to %p\n", created->notification);
+    IAudioSessionNotification_OnSessionCreated(created->notification, created->control);
+    IAudioSessionControl_Release(created->control);
+    IAudioSessionNotification_Release(created->notification);
+    free(created);
+    if (SUCCEEDED(init)) CoUninitialize();
+    return 0;
+}
+
+static void ensure_host_listener_session(IMMDevice *device)
+{
+    struct audio_session *session;
+
+    sessions_lock();
+    if (SUCCEEDED(get_audio_session(&host_listener_session_guid, device, 2, &session)))
+        session->host_listener = TRUE;
+    sessions_unlock();
+}
+
+static void announce_host_listener(IMMDevice *device, IAudioSessionNotification *notification)
+{
+    struct host_listener_created *created;
+    struct audio_session_wrapper *wrapper;
+    HANDLE thread;
+    HRESULT hr;
+
+    ensure_host_listener_session(device);
+
+    sessions_lock();
+    hr = get_audio_session_wrapper(&host_listener_session_guid, device, &wrapper);
+    sessions_unlock();
+    if (FAILED(hr)) return;
+
+    if (!(created = malloc(sizeof(*created))))
+    {
+        IAudioSessionControl2_Release(&wrapper->IAudioSessionControl2_iface);
+        return;
+    }
+    created->notification = notification;
+    created->control = (IAudioSessionControl *)&wrapper->IAudioSessionControl2_iface;
+    IAudioSessionNotification_AddRef(notification);
+
+    if ((thread = CreateThread(NULL, 0, host_listener_created_thread, created, 0, NULL)))
+        CloseHandle(thread);
+    else
+    {
+        IAudioSessionControl_Release(created->control);
+        IAudioSessionNotification_Release(notification);
+        free(created);
+    }
+}
 
 static CRITICAL_SECTION g_sessions_lock;
 static CRITICAL_SECTION_DEBUG g_sessions_lock_debug =
@@ -156,6 +284,8 @@ static HRESULT create_session_enumerator(IMMDevice *device, IAudioSessionEnumera
     if (!(enumerator = calloc(1, sizeof(*enumerator))))
         return E_OUTOFMEMORY;
 
+    if (is_voicemod_capture_endpoint(device)) ensure_host_listener_session(device);
+
     sessions_lock();
     hr = get_audio_sessions(device, &enumerator->sessions, &enumerator->session_count);
     sessions_unlock();
@@ -176,7 +306,14 @@ struct session_mgr
 {
     IAudioSessionManager2 IAudioSessionManager2_iface;
     IMMDevice *device;
+    struct list notifications;
     LONG ref;
+};
+
+struct session_notification
+{
+    struct list entry;
+    IAudioSessionNotification *iface;
 };
 
 static inline struct session_mgr *impl_from_IAudioSessionManager2(IAudioSessionManager2 *iface)
@@ -221,7 +358,18 @@ static ULONG WINAPI ASM_Release(IAudioSessionManager2 *iface)
     TRACE("(%p) new ref %lu\n", This, ref);
 
     if (!ref)
+    {
+        struct session_notification *notification, *next;
+
+        LIST_FOR_EACH_ENTRY_SAFE(notification, next, &This->notifications,
+                struct session_notification, entry)
+        {
+            list_remove(&notification->entry);
+            IAudioSessionNotification_Release(notification->iface);
+            free(notification);
+        }
         free(This);
+    }
 
     return ref;
 }
@@ -278,16 +426,57 @@ static HRESULT WINAPI ASM_RegisterSessionNotification(IAudioSessionManager2 *ifa
                                                       IAudioSessionNotification *notification)
 {
     struct session_mgr *This = impl_from_IAudioSessionManager2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, notification);
-    return E_NOTIMPL;
+    struct session_notification *entry;
+
+    TRACE("(%p)->(%p)\n", This, notification);
+    if (!notification) return E_POINTER;
+
+    LIST_FOR_EACH_ENTRY(entry, &This->notifications, struct session_notification, entry)
+        if (entry->iface == notification) return S_OK;
+
+    if (!(entry = malloc(sizeof(*entry)))) return E_OUTOFMEMORY;
+    IAudioSessionNotification_AddRef(notification);
+    entry->iface = notification;
+    list_add_tail(&This->notifications, &entry->entry);
+
+    /* Session creation callbacks are not generated for Wine clients yet, but
+     * retaining the callback and accepting registration matches the lifetime
+     * contract and lets clients which use notifications opportunistically
+     * initialize.
+     *
+     * Host applications record from the Voicemod bridge through PipeWire, so
+     * Wine never sees their sessions.  Voicemod stops processing the
+     * microphone when it believes nobody records from its virtual device;
+     * report one permanent listener on that endpoint. */
+    if (is_voicemod_capture_endpoint(This->device))
+    {
+        TRACE_(voicemod)("session notification %p registered on the Voicemod capture endpoint\n",
+                notification);
+        announce_host_listener(This->device, notification);
+    }
+    else TRACE_(voicemod)("session notification %p registered on device %p\n",
+            notification, This->device);
+    return S_OK;
 }
 
 static HRESULT WINAPI ASM_UnregisterSessionNotification(IAudioSessionManager2 *iface,
                                                         IAudioSessionNotification *notification)
 {
     struct session_mgr *This = impl_from_IAudioSessionManager2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, notification);
-    return E_NOTIMPL;
+    struct session_notification *entry;
+
+    TRACE("(%p)->(%p)\n", This, notification);
+    if (!notification) return E_POINTER;
+
+    LIST_FOR_EACH_ENTRY(entry, &This->notifications, struct session_notification, entry)
+    {
+        if (entry->iface != notification) continue;
+        list_remove(&entry->entry);
+        IAudioSessionNotification_Release(entry->iface);
+        free(entry);
+        return S_OK;
+    }
+    return E_NOTFOUND;
 }
 
 static HRESULT WINAPI ASM_RegisterDuckNotification(IAudioSessionManager2 *iface,
@@ -331,6 +520,7 @@ HRESULT AudioSessionManager_Create(IMMDevice *device, IAudioSessionManager2 **pp
 
     This->IAudioSessionManager2_iface.lpVtbl = &AudioSessionManager2_Vtbl;
     This->device = device;
+    list_init(&This->notifications);
     This->ref = 1;
 
     *ppv = &This->IAudioSessionManager2_iface;
