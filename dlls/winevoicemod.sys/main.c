@@ -33,7 +33,7 @@ static NTSTATUS complete_irp(IRP *irp, NTSTATUS status, ULONG_PTR information)
     return status;
 }
 
-static NTSTATUS dispatch_open_close(DEVICE_OBJECT *device, IRP *irp)
+static NTSTATUS WINAPI dispatch_open_close(DEVICE_OBJECT *device, IRP *irp)
 {
     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
 
@@ -41,7 +41,7 @@ static NTSTATUS dispatch_open_close(DEVICE_OBJECT *device, IRP *irp)
     return complete_irp(irp, STATUS_SUCCESS, 0);
 }
 
-static NTSTATUS dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
+static NTSTATUS WINAPI dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
 {
     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
     ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
