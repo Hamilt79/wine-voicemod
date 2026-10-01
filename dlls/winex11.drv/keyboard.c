@@ -1608,6 +1608,45 @@ BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *xev )
     return TRUE;
 }
 
+/***********************************************************************
+ *           X11DRV_BackgroundKeyEvent
+ *
+ * Handle a key pressed while another application has the input focus, so
+ * that keyboard hooks, raw input and hotkeys see it like they do on Windows.
+ */
+BOOL X11DRV_BackgroundKeyEvent( Display *display, unsigned int keycode, BOOL press, Time time )
+{
+    XKeyEvent event = {.type = press ? KeyPress : KeyRelease, .display = display, .keycode = keycode};
+    Window root, child;
+    int x, y, win_x, win_y;
+    WORD vkey, scan;
+    DWORD flags = 0;
+
+    if (keycode < min_keycode || keycode > max_keycode) return FALSE;
+    /* the focused window receives a regular key event */
+    if (is_wine_window_focused( display )) return FALSE;
+
+    /* raw events carry no modifier state */
+    XQueryPointer( display, DefaultRootWindow( display ), &root, &child, &x, &y, &win_x, &win_y, &event.state );
+
+    pthread_mutex_lock( &kbd_mutex );
+    scan = keyc2scan( keycode, event.state );
+    vkey = EVENT_event_to_vkey( NULL, &event );
+    pthread_mutex_unlock( &kbd_mutex );
+
+    TRACE_(key)( "keycode %u converted to vkey 0x%X scan %04x\n", keycode, vkey, scan );
+
+    if (!vkey) return FALSE;
+
+    if (!press) flags |= KEYEVENTF_KEYUP;
+    if (scan_is_extended( scan )) flags |= KEYEVENTF_EXTENDEDKEY;
+
+    /* target the desktop window, the key must not be typed into the last active window */
+    X11DRV_send_keyboard_input( NtUserGetDesktopWindow(), vkey & 0xff, scan & 0xff, flags,
+                                EVENT_x11_time_to_win32_time( time ) );
+    return TRUE;
+}
+
 static const struct layout_id_map_entry
 {
     const char *name;

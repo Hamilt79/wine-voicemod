@@ -611,6 +611,7 @@ extern BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *event );
 extern BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *event );
 extern BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *event );
 extern BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *event );
+extern BOOL X11DRV_BackgroundKeyEvent( Display *display, unsigned int keycode, BOOL press, Time time );
 extern BOOL X11DRV_KeymapNotify( HWND hwnd, XEvent *event );
 extern BOOL X11DRV_DestroyNotify( HWND hwnd, XEvent *event );
 extern BOOL X11DRV_SelectionRequest( HWND hWnd, XEvent *event );
@@ -623,6 +624,7 @@ extern void x11drv_xinput2_load(void);
 extern void x11drv_xinput2_init( struct x11drv_thread_data *data );
 extern void x11drv_xinput2_enable( Display *display, Window window );
 extern void x11drv_xinput2_disable( Display *display, Window window );
+extern void x11drv_xinput2_listen_keys( struct x11drv_thread_data *data );
 
 extern Bool (*pXGetEventData)( Display *display, XEvent /*XGenericEventCookie*/ *event );
 extern void (*pXFreeEventData)( Display *display, XEvent /*XGenericEventCookie*/ *event );
@@ -767,6 +769,7 @@ extern XContext winContext;
 extern XContext cursor_context;
 
 extern BOOL is_current_process_focused(void);
+extern BOOL is_wine_window_focused( Display *display );
 extern void X11DRV_ActivateWindow( HWND hwnd, HWND previous );
 extern void reapply_cursor_clipping(void);
 extern void ungrab_clipping_window(void);

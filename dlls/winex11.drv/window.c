@@ -410,6 +410,18 @@ static HWND hwnd_from_window( Display *display, Window window )
     return hwnd;
 }
 
+/* returns whether the X input focus is on a window of any Wine process */
+BOOL is_wine_window_focused( Display *display )
+{
+    Window focus;
+    int revert;
+
+    XGetInputFocus( display, &focus, &revert );
+    if (focus == None || focus == PointerRoot) return FALSE;
+    if (focus == root_window) return is_virtual_desktop();
+    return hwnd_from_window( display, focus ) != NtUserGetDesktopWindow();
+}
+
 /***********************************************************************
  *              alloc_win_data
  */
@@ -2830,6 +2842,7 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
         XFlush( data->display );
         NtUserSetProp( hwnd, clip_window_prop, (HANDLE)data->clip_window );
         X11DRV_DisplayDevices_RegisterEventHandlers();
+        x11drv_xinput2_listen_keys( data );
     }
     return TRUE;
 }

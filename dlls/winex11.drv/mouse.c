@@ -382,6 +382,21 @@ void x11drv_xinput2_disable( Display *display, Window window )
 
 
 /***********************************************************************
+ *              x11drv_xinput2_listen_keys
+ *
+ * Receive the keys pressed while another application has the input focus.
+ */
+void x11drv_xinput2_listen_keys( struct x11drv_thread_data *data )
+{
+    if (!xinput2_available) return;
+
+    XISetMask( data->root_mask, XI_RawKeyPress );
+    XISetMask( data->root_mask, XI_RawKeyRelease );
+    pXISelectEvents( data->display, DefaultRootWindow( data->display ), &data->root_events, 1 );
+}
+
+
+/***********************************************************************
  *              x11drv_xinput_init
  */
 void x11drv_xinput2_init( struct x11drv_thread_data *data )
@@ -426,6 +441,10 @@ void x11drv_xinput2_enable( Display *display, Window window )
 }
 
 void x11drv_xinput2_disable( Display *display, Window window )
+{
+}
+
+void x11drv_xinput2_listen_keys( struct x11drv_thread_data *data )
 {
 }
 
@@ -1804,6 +1823,16 @@ static BOOL X11DRV_RawButtonEvent( XGenericEventCookie *cookie )
     return TRUE;
 }
 
+/***********************************************************************
+ *           X11DRV_RawKeyEvent
+ */
+static BOOL X11DRV_RawKeyEvent( XGenericEventCookie *cookie )
+{
+    XIRawEvent *event = cookie->data;
+
+    return X11DRV_BackgroundKeyEvent( event->display, event->detail, event->evtype == XI_RawKeyPress, event->time );
+}
+
 static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
 {
     RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
@@ -1911,6 +1940,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
     case XI_RawButtonPress:
     case XI_RawButtonRelease:
         ret = X11DRV_RawButtonEvent( event );
+        break;
+    case XI_RawKeyPress:
+    case XI_RawKeyRelease:
+        ret = X11DRV_RawKeyEvent( event );
         break;
     case XI_TouchBegin:
     case XI_TouchUpdate:
