@@ -1080,9 +1080,57 @@ static HRESULT pulse_spec_from_waveformat(struct pulse_stream *stream, const WAV
     return S_OK;
 }
 
+struct real_microphone
+{
+    BOOL voicemod_is_default;
+    int priority;
+    char name[256];
+};
+
+static void default_source_cb(pa_context *c, const pa_server_info *i, void *userdata)
+{
+    struct real_microphone *mic = userdata;
+
+    pulse_broadcast();
+    if (i && i->default_source_name)
+        mic->voicemod_is_default = !strncmp(i->default_source_name, "voicemod_", 9);
+}
+
+static void real_microphone_cb(pa_context *c, const pa_source_info *i, int eol, void *userdata)
+{
+    struct real_microphone *mic = userdata;
+    const char *prop;
+    int priority = 0;
+
+    pulse_broadcast();
+    if (!i || !i->name || i->monitor_of_sink != PA_INVALID_INDEX || !strncmp(i->name, "voicemod_", 9))
+        return;
+    if ((prop = pa_proplist_gets(i->proplist, "priority.session")))
+        priority = atoi(prop);
+    if (mic->name[0] && priority <= mic->priority)
+        return;
+    lstrcpynA(mic->name, i->name, sizeof(mic->name));
+    mic->priority = priority;
+}
+
+/* Fix for Voicemod selecting itself as default mic */
+static const char *pulse_real_microphone(struct real_microphone *mic)
+{
+    memset(mic, 0, sizeof(*mic));
+    wait_pa_operation_complete(pa_context_get_server_info(pulse_ctx, default_source_cb, mic));
+    if (!mic->voicemod_is_default)
+        return NULL;
+    wait_pa_operation_complete(pa_context_get_source_info_list(pulse_ctx, real_microphone_cb, mic));
+    if (!mic->name[0])
+        return NULL;
+    TRACE("Using %s instead of Voicemod's microphone\n", mic->name);
+    return mic->name;
+}
+
 static HRESULT pulse_stream_connect(struct pulse_stream *stream, const char *pulse_name, UINT32 period_bytes)
 {
     pa_stream_flags_t flags = PA_STREAM_START_CORKED | PA_STREAM_START_UNMUTED | PA_STREAM_ADJUST_LATENCY;
+    struct real_microphone mic;
     int ret;
     char buffer[64];
     static LONG number;
@@ -1111,7 +1159,7 @@ static HRESULT pulse_stream_connect(struct pulse_stream *stream, const char *pul
     /* If specific device was requested, use it exactly */
     if (pulse_name[0])
         flags |= PA_STREAM_DONT_MOVE;
-    else
+    else if (stream->dataflow != eCapture || !(pulse_name = pulse_real_microphone(&mic)))
         pulse_name = NULL;  /* use default */
 
     if (stream->dataflow == eRender)
